@@ -1,133 +1,95 @@
+import requests
 import random
 import string
-import time
-import requests
 from selenium import webdriver
 from selenium.webdriver.common.by import By
+from selenium.webdriver.common.action_chains import ActionChains
+from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.desired_capabilities import DesiredCapabilities
+from webdriver_manager.chrome import ChromeDriverManager
+import time
 
-def scrape_temp_email(driver):
-    driver.get("https://temp-mail.org/en/")
-    email_element = driver.find_element(By.ID, "email")
-    temp_email = email_element.get_attribute("value")
-    return temp_email
-
-# Initialize WebDriver
-def init_driver():
-    chrome_options = Options()
-    chrome_options.add_argument('--no-sandbox')
-    chrome_options.add_argument('--disable-dev-shm-usage')
-    chrome_options.add_argument('--disable-gpu')
-    chrome_options.add_argument('--window-size=1920,1080')
-    chrome_options.add_argument('--log-level=3')
-    chrome_options.add_argument('--start-maximized')
-    chrome_options.add_argument('--ignore-certificate-errors')
-    chrome_options.add_argument('--disable-blink-features=AutomationControlled')
-    chrome_options.add_argument('--disable-extensions')
-
-    driver = webdriver.Chrome(options=chrome_options)
-    driver.set_page_load_timeout(30)
-    driver.implicitly_wait(5)
-    return driver
-
-# Generate a temporary email address using Temp-Mail API
 def generate_temp_email():
-    api_url = "https://api.temp-mail.org/request/domains/format/json"
-    email_domain = requests.get(api_url).json()[0]
-    username = ''.join(random.choices(string.ascii_lowercase + string.digits, k=10))
-    email = f"{username}@{email_domain}"
-    return email, username
-
-# Check inbox for verification email
-def fetch_verification_code(username, domain):
-    api_url = f"https://api.temp-mail.org/request/mail/id/{username}@{domain}/format/json"
-    time.sleep(10)  # Allow time for the email to arrive
-    response = requests.get(api_url).json()
-    if response:
-        # Extract the verification code from the latest email
-        return response[-1]['mail_text']
-    return None
-
-# Process a single account registration
-def process_account(driver, join_link):
-    email, username = generate_temp_email()
-    domain = email.split('@')[1]  # Extract domain from the email
-    
+    # Alternative Temp-Mail API
+    api_url = "https://api.mail.tm/domains"
     try:
-        # Navigate to the referral website
+        # Get available domains from Mail.tm
+        response = requests.get(api_url, timeout=10)
+        response.raise_for_status()
+
+        # Extract the first domain from the response
+        domain = response.json()["hydra:member"][0]["domain"]
+
+        # Generate a random username
+        username = ''.join(random.choices(string.ascii_lowercase + string.digits, k=10))
+
+        # Combine to create an email
+        email = f"{username}@{domain}"
+        return email, username
+    except requests.exceptions.RequestException as e:
+        print(f"Error fetching temp email: {e}")
+        raise
+
+def process_account(driver, join_link):
+    try:
+        # Generate temporary email
+        email, username = generate_temp_email()
+
+        # Navigate to the join link
         driver.get(join_link)
-        time.sleep(2)
+        
+        # Wait for the registration form to load
+        WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.NAME, "email")))
 
-        # Fill out the signup form
-        email_field = WebDriverWait(driver, 10).until(
-            EC.presence_of_element_located((By.ID, "email"))  # Adjust ID based on actual site structure
-        )
+        # Fill the registration form
+        email_field = driver.find_element(By.NAME, "email")
+        password_field = driver.find_element(By.NAME, "password")
+        confirm_password_field = driver.find_element(By.NAME, "confirmPassword")
+
         email_field.send_keys(email)
+        password_field.send_keys("password123")
+        confirm_password_field.send_keys("password123")
 
-        password_field = WebDriverWait(driver, 10).until(
-            EC.presence_of_element_located((By.ID, "password"))  # Adjust ID based on actual site structure
-        )
-        password_field.send_keys("SecurePassword123")  # Use a secure password
-
-        submit_button = WebDriverWait(driver, 10).until(
-            EC.element_to_be_clickable((By.ID, "submitButton"))  # Adjust ID based on actual site structure
-        )
+        # Submit the form
+        submit_button = driver.find_element(By.XPATH, "//button[@type='submit']")
         submit_button.click()
 
-        print(f"Account created successfully with email: {email}")
+        # Wait for the account creation confirmation
+        WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.XPATH, "//div[contains(text(), 'Account created')]")))
 
-        # Fetch verification code
-        verification_code = fetch_verification_code(username, domain)
-        if verification_code:
-            print(f"Verification code received: {verification_code}")
-
-            # Enter verification code into the form
-            verification_field = WebDriverWait(driver, 10).until(
-                EC.presence_of_element_located((By.ID, "verificationCode"))  # Adjust ID based on actual site structure
-            )
-            verification_field.send_keys(verification_code)
-
-            confirm_button = WebDriverWait(driver, 10).until(
-                EC.element_to_be_clickable((By.ID, "confirmButton"))  # Adjust ID based on actual site structure
-            )
-            confirm_button.click()
-            print(f"Account verified for email: {email}")
-        else:
-            print(f"No verification code received for email: {email}")
-
-        # Save credentials
-        with open('registered_emails.txt', 'a') as f:
-            f.write(f"{email}:SecurePassword123\n")
-
+        print(f"Account created successfully: {email}")
         return True
-
     except Exception as e:
-        print(f"Error processing account {email}: {str(e)}")
+        print(f"Error processing account: {e}")
         return False
 
-# Main function to handle multiple registrations
 def main():
-    join_link = "https://www.1024terabox.com/referral/4401045737659"  # Referral link
-    registrations = 200
-    interval = 300  # 5 minutes in seconds
+    # Initialize Selenium WebDriver
+    options = Options()
+    options.add_argument("--headless")
+    options.add_argument("--disable-gpu")
+    options.add_argument("--no-sandbox")
 
-    for i in range(registrations):
-        print(f"Starting registration {i + 1}/{registrations}")
-        driver = init_driver()
-        try:
-            success = process_account(driver, join_link)
-            if success:
-                print(f"Registration {i + 1} completed successfully.")
-            else:
-                print(f"Registration {i + 1} failed.")
-        finally:
-            driver.quit()
-        if i < registrations - 1:
-            print("Waiting for 5 minutes before the next registration...")
-            time.sleep(interval)
+    driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
+
+    try:
+        # Link to join/register
+        join_link = "https://example.com/join"
+
+        # Process the account
+        success = process_account(driver, join_link)
+
+        if success:
+            print("Account creation completed.")
+        else:
+            print("Account creation failed.")
+
+    finally:
+        driver.quit()
 
 if __name__ == "__main__":
     main()
-
